@@ -1,0 +1,243 @@
+"""Render the real panel with a stubbed chrome API and look at it.
+
+Feeds the panel a genuine snapshot taken from the fixture page, so the two halves
+are tested against the same data the extension will actually carry.
+"""
+import functools, http.server, json, pathlib, threading, sys
+
+ROOT = pathlib.Path(__file__).resolve().parent
+APP = ROOT.parent
+SRC = (APP / "src" / "extract.js").read_text()
+
+failures, checks = [], 0
+def check(label, got, want):
+    global checks
+    checks += 1
+    if got != want:
+        failures.append(f"{label}: got {got!r}, want {want!r}")
+
+STUB = r"""
+(() => {
+  const snap = __SNAP__;
+  const noop = { addListener() {} };
+  globalThis.chrome = {
+    tabs: {
+      query: async () => [{ id: 1, title: "Cheap Widgets Melbourne | Widget Co",
+                            url: "https://example.com/widgets", favIconUrl: "" }],
+      onActivated: noop, onUpdated: noop,
+    },
+    windows: { onFocusChanged: noop, WINDOW_ID_NONE: -1 },
+    scripting: { executeScript: async () => [{ result: snap }] },
+    declarativeNetRequest: { updateSessionRules: async () => {} },
+  };
+
+  // A site whose HTML is an empty shell: content, links and schema all arrive with JS.
+  const SHELL = `<!doctype html><html><head><title>Cheap Widgets Melbourne | Widget Co</title>
+    <link rel="canonical" href="https://example.com/widgets"></head>
+    <body><div id="root"></div></body></html>`;
+  const ROBOTS = "User-agent: GPTBot\nDisallow: /\nUser-agent: *\nAllow: /\nSitemap: https://example.com/sitemap.xml\n";
+  const SITEMAP = "<urlset><url><loc>https://example.com/widgets</loc></url></urlset>";
+  const routes = {
+    "https://example.com/widgets": [200, SHELL, "text/html"],
+    "https://example.com/robots.txt": [200, ROBOTS, "text/plain"],
+    "https://example.com/sitemap.xml": [200, SITEMAP, "application/xml"],
+    "https://example.com/llms.txt": [404, "", "text/plain"],
+    "https://example.com/llms-full.txt": [404, "", "text/plain"],
+  };
+  globalThis.__calls = [];
+  globalThis.fetch = async (url) => {
+    globalThis.__calls.push(url);
+    const [status, body, type] = routes[url] || [404, "", "text/plain"];
+    return {
+      url, status, ok: status >= 200 && status < 300, redirected: false,
+      headers: { entries: () => [["content-type", type], ["x-robots-tag", "noarchive"]] },
+      text: async () => body,
+    };
+  };
+})();
+"""
+
+
+def main():
+    from playwright.sync_api import sync_playwright
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(ROOT / "fixtures"))
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_port}"
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 400, "height": 900})
+        page.goto(f"{base}/messy.html", wait_until="load")
+        page.evaluate("src => eval(src)", SRC)
+        snap = page.evaluate("() => __seoExtract(document, { live: true })")
+        # The fixture is served from localhost. Re-label it so the stubbed routes
+        # stand in for a real site, which is what the panel would be pointed at.
+        snap.update(url="https://example.com/widgets", origin="https://example.com",
+                    host="example.com", protocol="https:")
+        # Long real-world hostnames, which is what made the card overflow the panel.
+        hosts = [
+            {"host": "www.googletagmanager.com", "count": 4, "thirdParty": True, "how": ["script"]},
+            {"host": "securepubads.g.doubleclick.net", "count": 9, "thirdParty": True, "how": ["script", "img"]},
+            {"host": "connect.facebook.net", "count": 2, "thirdParty": True, "how": ["script"]},
+            {"host": "fonts.gstatic.com", "count": 6, "thirdParty": True, "how": ["css"]},
+            {"host": "example.com", "count": 12, "thirdParty": False, "how": ["img"]},
+        ]
+        hosts += [{"host": f"cdn{i}.a-very-long-third-party-hostname.example.net",
+                   "count": 1, "thirdParty": True, "how": ["img"]} for i in range(14)]
+        # Merge, never replace: loaded.html is what the tracker fingerprints read.
+        snap["loaded"].update(hosts=hosts,
+                              thirdPartyHosts=sum(1 for h in hosts if h["thirdParty"]))
+
+        errors = []
+        panel = browser.new_page(viewport={"width": 400, "height": 900})
+        panel.on("pageerror", lambda e: errors.append(str(e)))
+        panel.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+        panel.add_init_script(STUB.strip().replace("__SNAP__", json.dumps(snap)))
+        panel.goto((APP / "panel.html").as_uri(), wait_until="load")
+        panel.wait_for_selector(".finding")
+
+        # ---- shell ----
+        check("no page errors", errors, [])
+        check("page title shown", panel.inner_text("#page-title"), "Cheap Widgets Melbourne | Widget Co")
+        check("notice hidden", panel.is_visible("#notice"), False)
+        tabs = panel.eval_on_selector_all(".tab", "els => els.map(e => e.textContent.replace(/[0-9]+$/, ''))")
+        check("five views", tabs, ["Issues", "Page", "Tech", "AI", "Data"])
+        check("issues opens first", panel.eval_on_selector(".tab[aria-selected=true]", "e => e.textContent").startswith("Issues"), True)
+
+        # ---- issues ----
+        text = panel.inner_text("#out")
+        check("verdict headline", "to fix" in panel.inner_text(".verdict"), True)
+        tiles = panel.eval_on_selector_all(".tile", "els => els.map(e => e.className.split(' ')[1] + ':' + e.querySelector('b').textContent)")
+        counts = dict(t.split(":") for t in tiles)
+        check("failures counted", int(counts["fail"]) >= 2, True)
+        check("warnings counted", int(counts["warn"]) >= 3, True)
+        check("passes hidden by default", panel.eval_on_selector(".tile.pass", "e => e.getAttribute('aria-pressed')"), "false")
+
+        check("broken json-ld reported", "does not parse" in text, True)
+        check("two H1s reported", "2 H1 headings" in text, True)
+        check("missing description reported", "No meta description" in text, True)
+        check("missing viewport reported", "No viewport tag" in text, True)
+        check("missing alt reported", "no alt attribute" in text, True)
+        check("every failure and warning carries a fix", panel.eval_on_selector_all(
+            ".finding.fail, .finding.warn", "els => els.every(e => e.querySelector('.f-fix'))"), True)
+        check("and there are plenty of them", panel.eval_on_selector_all(".finding .f-fix", "e => e.length") > 5, True)
+        check("failures are grouped first", panel.eval_on_selector(".group h3", "e => e.textContent").startswith("To fix"), True)
+        check("a failure never sits below another area's notes", panel.eval_on_selector_all(
+            ".finding", "els => els.findIndex(e => e.classList.contains('note')) > els.findLastIndex(e => e.classList.contains('fail'))"), True)
+        check("each finding names its area", panel.eval_on_selector(".finding .f-sev", "e => e.textContent"), "meta")
+        check("no em dash anywhere", "\u2014" in panel.inner_text("body"), False)
+        check("nothing from the page was parsed as html", "<script" in text, False)
+        panel.evaluate("() => document.querySelector('main').scrollTo(0, 0)")
+        panel.screenshot(path=str(ROOT / "ui-issues.png"), full_page=True)
+
+        # filters are live
+        before = panel.eval_on_selector_all(".finding", "e => e.length")
+        panel.click(".tile.note")
+        after = panel.eval_on_selector_all(".finding", "e => e.length")
+        check("turning notes off removes findings", after < before, True)
+        panel.click(".tile.note")
+        check("and turning them back on restores them", panel.eval_on_selector_all(".finding", "e => e.length"), before)
+
+        # ---- page view ----
+        panel.click(".tab >> nth=1")
+        cards = panel.eval_on_selector_all("details.card > summary", "els => els.map(e => e.firstChild.textContent.trim())")
+        for want in ["Indexing", "Title and meta", "Heading outline", "Links", "Images", "Structured data", "Hreflang"]:
+            check(f"page card '{want}'", want in cards, True)
+        check("outline rows", panel.eval_on_selector_all("ul.outline li", "e => e.length"), 7)
+        check("title measured in pixels", "px" in panel.inner_text("#out"), True)
+        panel.evaluate("() => document.querySelector('main').scrollTo(0, 0)")
+        panel.screenshot(path=str(ROOT / "ui-page.png"), full_page=True)
+
+        # ---- tech view, built with no network ----
+        panel.click(".tab >> nth=2")
+        tech = panel.inner_text("#out")
+        check("verdict in plain words", "instrumented" in tech, True)
+        check("GTM container id read", "GTM-TEST123" in tech, True)
+        check("GA4 id read", "G-TEST123456" in tech, True)
+        check("gtm-loader did not invent an id", "GTM-LOADE" in tech, False)
+        check("WordPress detected", "WordPress" in tech, True)
+        check("theme named", "Theme: astra" in tech, True)
+        check("social profile found", "Facebook" in tech, True)
+        check("profile url sits on one line", panel.eval_on_selector(
+            ".surl", "e => e.getBoundingClientRect().height < 24"), True)
+        check("profile url keeps the full address in the tooltip", panel.eval_on_selector(
+            ".surl", "e => e.title.startsWith('https://')"), True)
+        check("security headers wait for the run", "not run" in tech, True)
+        check("one primary action, not two", panel.eval_on_selector_all("button.btn", "e => e.length"), 2)
+
+        # Third party hosts: long names in a narrow panel must not blow the layout up.
+        check("hosts card counts third party only", "Third party hosts" in tech, True)
+        panel.click("details.card:has(> summary:text-matches('Third party hosts'))  > summary")
+        panel.wait_for_selector(".host")
+        check("busiest host first", panel.eval_on_selector(".hname", "e => e.textContent"), "securepubads.g.doubleclick.net")
+        check("list is capped, not all 18 at once", panel.eval_on_selector_all(".hosts > .host", "e => e.length"), 10)
+        check("a show more control exists", panel.is_visible(".morebtn"), True)
+        check("every host name is one line", panel.eval_on_selector_all(
+            ".hname", "els => els.every(e => e.getBoundingClientRect().height < 24)"), True)
+        check("the longest name truncates rather than pushing the panel wide", panel.eval_on_selector_all(
+            ".hname", "els => els.every(e => e.scrollWidth >= e.clientWidth)"), True)
+        check("nothing overflows the panel width", panel.evaluate(
+            "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth"), True)
+        check("the collapsed card stays inside one panel height", panel.eval_on_selector(
+            ".hosts", "e => e.getBoundingClientRect().height < window.innerHeight * 0.45"), True)
+        check("full name kept in the tooltip", panel.eval_on_selector(".hname", "e => e.title"), "securepubads.g.doubleclick.net")
+        panel.click(".morebtn")
+        check("show more reveals the rest", panel.eval_on_selector_all(".host", "e => e.length"), 18)
+        check("no scrollbar nested inside the panel scroll", panel.eval_on_selector(
+            ".hosts", "e => e.scrollHeight <= e.clientHeight + 1"), True)
+        check("still no sideways scroll with everything open", panel.evaluate(
+            "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth"), True)
+        panel.evaluate("() => document.querySelector('main').scrollTo(0, 0)")
+        panel.screenshot(path=str(ROOT / "ui-tech.png"), full_page=True)
+
+        # ---- ai view and the run ----
+        panel.click("#run")
+        panel.wait_for_selector(".finding")
+        panel.wait_for_function("() => !document.querySelector('#run').disabled")
+        ai = panel.inner_text("#out")
+        check("the run switches to the AI view", panel.eval_on_selector(".tab[aria-selected=true]", "e => e.textContent"), "AI")
+        check("shell page fails the JS gap", "without JavaScript" in ai, True)
+        check("missing internal links caught", "No internal links exist before JavaScript runs" in ai, True)
+        check("GPTBot block reported", "GPTBot" in ai, True)
+        check("llms.txt absence is not a failure", panel.eval_on_selector_all(
+            ".finding.fail", "els => els.some(e => /llms/.test(e.textContent))"), False)
+        check("what was fetched is listed", "raw HTML fetch" in ai, True)
+        check("x-robots-tag surfaced", "noarchive" in ai, True)
+        check("sitemap membership surfaced", "this URL is listed" in ai, True)
+        calls = panel.evaluate("() => __calls")
+        check("robots.txt fetched once", calls.count("https://example.com/robots.txt"), 1)
+        check("no user agent probes unless asked", any("gptbot" in c.lower() for c in calls), False)
+        panel.evaluate("() => document.querySelector('main').scrollTo(0, 0)")
+        panel.screenshot(path=str(ROOT / "ui-ai.png"), full_page=True)
+
+        # the run feeds the other views
+        panel.click(".tab >> nth=2")
+        check("security grade appears after the run", "Security headers" in panel.inner_text("#out"), True)
+        panel.click(".tab >> nth=0")
+        check("header directives reach the page checks", "noarchive" in panel.inner_text("#out").lower(), True)
+
+        # ---- data view ----
+        panel.click(".tab >> nth=4")
+        data = panel.inner_text("#out")
+        check("timing shown", "read the page" in data, True)
+        check("serialised html kept out of the dump", "omitted here" in data, True)
+        panel.evaluate("() => document.querySelector('main').scrollTo(0, 0)")
+        panel.screenshot(path=str(ROOT / "ui-data.png"), full_page=True)
+
+        # ---- report ----
+        md = panel.evaluate("() => report()")
+        check("report names the page", md.startswith("# SEO Xray: Cheap Widgets"), True)
+        check("report has a to-fix section", "## To fix" in md, True)
+        check("report carries fixes", "Fix:" in md, True)
+        check("report has no em dash", "\u2014" in md, False)
+
+        browser.close()
+    httpd.shutdown()
+
+    print(f"{checks - len(failures)}/{checks} checks passed  (screenshots in tests/)")
+    for f in failures:
+        print("  FAIL " + f)
+    sys.exit(1 if failures else 0)
+
+main()

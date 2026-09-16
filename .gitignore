@@ -1,0 +1,16 @@
+# Chrome extension signing key, never commit
+*.pem
+
+# Build output
+dist/
+
+# Local tooling that points at this machine, not part of the extension
+tools/
+
+# Test artefacts
+tests/ui-*.png
+tests/panel.png
+
+# OS and editor cruft
+.DS_Store
+*.swp

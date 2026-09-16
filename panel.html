@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SEO Xray</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header>
+    <div class="ident">
+      <img id="favicon" alt="" width="16" height="16">
+      <div class="ident-text">
+        <div id="page-title" class="ptitle">Reading the page</div>
+        <div id="page-url" class="purl"></div>
+      </div>
+      <button id="refresh" class="icon-btn" type="button" title="Read the page again">&#8635;</button>
+    </div>
+    <nav id="tabs" class="tabs" role="tablist"></nav>
+  </header>
+
+  <div id="notice" class="notice" hidden></div>
+  <main id="out"></main>
+
+  <footer class="foot">
+    <button id="run" class="btn" type="button">Run site checks</button>
+    <button id="copy" class="btn ghost" type="button">Copy report</button>
+    <span id="stamp" class="stamp"></span>
+  </footer>
+
+  <script src="src/robots.js"></script>
+  <script src="src/extract.js"></script>
+  <script src="src/fetchers.js"></script>
+  <script src="src/checks.js"></script>
+  <script src="src/aiready.js"></script>
+  <script src="src/catalogue.js"></script>
+  <script src="src/tech.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>
