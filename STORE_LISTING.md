@@ -16,13 +16,19 @@ SEO Xray audits the page you are looking at using the page's own code. Open the
 side panel and you get a list of what is wrong, each with a fix written next to
 it. No account, no API key, no AI, nothing sent anywhere.
 
+The Summary page shows title, description, URL, canonical, robots directives, H1
+and word count together, each with a colour: red when broken, amber when worth a
+look, green when fine. Headings, Links, Images, Schema and Social each have their
+own page.
+
 What it checks:
 
 ON-PAGE
 Title and meta description measured in real pixel widths, not character counts.
 Canonical, meta robots, X-Robots-Tag, viewport, lang, charset. Full heading
-outline with skipped levels flagged. Internal and external links, nofollow.
-Images missing alt text. Open Graph and Twitter cards. Hreflang pairs.
+outline with skipped levels flagged. Internal and external links, nofollow, and
+a status check that marks each link 200, redirect or 404. Images missing alt
+text, missing dimensions, oversized or failing to load. Open Graph and Twitter cards. Hreflang pairs.
 
 STRUCTURED DATA
 Every JSON-LD block, parsed. A block with a syntax error is ignored by Google
@@ -45,8 +51,9 @@ builder, SEO plugin, JavaScript framework, verification tags, social profiles,
 third party hosts, security header grade.
 
 PRIVACY
-Reading the page is local. The only button that touches the network is Run site
-checks, and it talks to the site you are already on and nowhere else. No
+Reading the page is local. Two buttons touch the network: Run site checks talks
+only to the site you are on, and Check status sends a HEAD request to each link
+on the page. Nothing else requests anything. No
 analytics, no telemetry, no remote code, no account.
 
 Open source under the MIT license.
@@ -59,8 +66,9 @@ tabs: detects the active tab and navigation so the panel stays in sync.
 storage: remembers which panel tab was last open.
 declarativeNetRequestWithHostAccess: sets a crawler user agent header on the
 optional probe request so the user can see whether the site blocks AI crawlers.
-Host permission all urls: the user can audit any page they are on, and robots.txt
-must be fetchable from whichever host that is.
+Host permission all urls: the user can audit any page they are on, robots.txt
+must be fetchable from whichever host that is, and the user can check whether the
+links on the page still work.
 
 **Single purpose**
 Inspect the current page for search engine optimisation problems and show the

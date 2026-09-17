@@ -145,7 +145,51 @@
     };
   }
 
-  const api = { fetchText, fetchAsAgent, getRobots, getLlmsTxt, getSitemaps, sitemapContains, originOf };
+  /**
+   * Status of one linked URL. HEAD first because it is cheap; servers that refuse
+   * HEAD get a GET that is cut off as soon as the headers arrive. Redirects are
+   * followed, so the result carries the final status and whether it moved.
+   */
+  async function linkStatus(url, opts = {}) {
+    const started = Date.now();
+    const attempt = async (method) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), opts.timeout || 10000);
+      try {
+        const res = await fetch(url, { method, credentials: "omit", cache: "no-store", redirect: "follow", signal: controller.signal });
+        const out = { status: res.status, finalUrl: res.url, redirected: res.redirected, method };
+        controller.abort();   // a GET only needed the headers
+        return out;
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    try {
+      let r = await attempt("HEAD");
+      if ([405, 501].includes(r.status)) r = await attempt("GET");
+      return Object.assign({ url, error: null, ms: Date.now() - started }, r);
+    } catch (err) {
+      return { url, status: 0, finalUrl: null, redirected: false, error: err.name === "AbortError" ? "timed out" : String(err.message || err), ms: Date.now() - started };
+    }
+  }
+
+  /** Check many URLs, a few at a time, reporting each one as it lands. */
+  async function linkStatuses(urls, opts = {}) {
+    const queue = urls.slice();
+    const results = {};
+    const worker = async () => {
+      while (queue.length) {
+        if (opts.cancelled && opts.cancelled()) return;
+        const url = queue.shift();
+        results[url] = await linkStatus(url, opts);
+        if (opts.onEach) opts.onEach(results[url]);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(opts.concurrency || 6, urls.length) }, worker));
+    return results;
+  }
+
+  const api = { fetchText, fetchAsAgent, getRobots, getLlmsTxt, getSitemaps, sitemapContains, originOf, linkStatus, linkStatuses };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.SEOFetch = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

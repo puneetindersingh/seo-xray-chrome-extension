@@ -5,6 +5,11 @@ the page's own code. No account, no API key, no server, no AI. Open a page, the
 panel reads it, and you get a list of what is wrong with a fix written next to
 each finding.
 
+A Summary page puts the title, description, URL, canonical, robots directives,
+H1 and word count in one place, each with a coloured pill: red when it is broken,
+amber when it is worth a look, green when it is fine. Headings, Links, Images,
+Schema and Social each get their own page, with every row marked the same way.
+
 It answers two questions most SEO extensions skip. What does Google actually
 receive from this URL, and what do ChatGPT, Claude and Perplexity receive, which
 is usually not the same thing.
@@ -13,7 +18,9 @@ is usually not the same thing.
 ![Manifest V3](https://img.shields.io/badge/Chrome-Manifest%20V3-4f46e5)
 ![No tracking](https://img.shields.io/badge/tracking-none-067647)
 
-![The Issues tab](docs/ui-issues.png)
+| Summary | Headings | Links |
+| --- | --- | --- |
+| ![The Summary page](docs/ui-summary.png) | ![The heading outline](docs/ui-headings.png) | ![Links with status checked](docs/ui-links.png) |
 
 ## Install
 
@@ -35,6 +42,14 @@ rather than character counts, canonical, meta robots, X-Robots-Tag, viewport,
 lang, charset, heading outline with skipped levels flagged, internal and
 external links, nofollow, images without alt text, Open Graph and Twitter cards,
 hreflang pairs.
+
+**Links, with status.** Every link with its anchor text, internal or external,
+nofollow, sponsored and ugc, links with no anchor text, and a Check status button
+that marks each one 200, redirect, 403 or 404. A 403 or 429 is shown in amber
+rather than called broken, because it is usually a site blocking scripts.
+
+**Images.** Missing alt, empty alt, missing width and height, files far larger
+than they are shown, lazy loading above the fold, and images that failed to load.
 
 **Structured data.** Every JSON-LD block on the page, parsed. A block with a
 trailing comma is ignored by Google in silence, so the panel tells you which one
@@ -77,9 +92,11 @@ What you get is everything that can be read from the page itself, read properly.
 
 Reading the page happens locally and automatically. Nothing is transmitted.
 
-The one button that touches the network is **Run site checks**, and it requests
-only from the site you are already on: its raw HTML, its robots.txt, its
-llms.txt, its sitemap. Those requests never go anywhere else. There is no
+Two buttons touch the network. **Run site checks** requests only from the site
+you are already on: its raw HTML, its robots.txt, its llms.txt, its sitemap.
+**Check status** on the Links tab sends a HEAD request to each link on the page,
+without cookies. Nothing else requests anything, and images from the page are
+never loaded into the panel. There is no
 analytics, no telemetry, no remote code, no account, and nothing is stored off
 your machine. See [PRIVACY.md](PRIVACY.md).
 
@@ -92,7 +109,7 @@ your machine. See [PRIVACY.md](PRIVACY.md).
 | `tabs` | knows which tab you are on and when you navigate |
 | `storage` | remembers which tab of the panel you had open |
 | `declarativeNetRequestWithHostAccess` | sets a crawler user agent on the optional probe request |
-| `<all_urls>` | you can audit any page, and robots.txt can be fetched from any host |
+| `<all_urls>` | you can audit any page, robots.txt can be fetched from any host, and links to any host can be checked |
 
 `<all_urls>` is a wide grant and worth understanding before you install anything
 that asks for it. Here it is what lets the panel read whichever tab you happen to
@@ -160,7 +177,7 @@ ever written with `innerHTML`. Text goes in through `textContent`, always.
 python3 tests/run.py
 ```
 
-399 checks. Playwright and Python 3 are needed for the browser tests.
+511 checks. Playwright and Python 3 are needed for the browser tests.
 
 | file | what it covers |
 | --- | --- |
@@ -170,19 +187,20 @@ python3 tests/run.py
 | `robots_test.js` | the matcher against the RFC rules and malformed input |
 | `tech_test.js` | signatures, CMS detection, and the false positives already fixed once |
 | `aiready_test.js` | the raw versus rendered comparison and crawler access |
-| `panel_test.py` | the real panel with a stubbed browser and a stubbed network |
+| `panel_test.py` | the real panel, all ten pages, with a stubbed browser and a stubbed network |
 | `perf_test.py` | a deliberately heavy page held to a time budget |
 
 `tests/fixtures/messy.html` is a page with faults on purpose: two H1s, a skipped
 heading level, a missing alt, broken JSON-LD, no meta description, no viewport, a
-tag manager, a dead-end anchor.
+tag manager, a dead-end anchor, and image files that do not exist.
 
 Panel tests write screenshots to `tests/ui-*.png`. Look at them rather than
 trusting a green tick.
 
 ## Speed
 
-On a 5,400 node page: read 32ms, score 13ms, draw 15ms, switch tab 23ms.
+On a 5,400 node page: read 34ms, score 16ms, draw 45ms, switch to the 1,800 link Links tab 11ms.
+Long lists draw 120 rows at a time.
 `perf_test.py` holds those to a budget, so a change that makes the panel sluggish
 fails the suite instead of being noticed months later.
 
@@ -193,6 +211,8 @@ fails the suite instead of being noticed months later.
       user agent probes
 - [x] Tech and tracking detection
 - [x] Tabbed interface, severity filters, copy report, speed budget
+- [x] Summary page with red, amber and green status pills; Headings, Links,
+      Images, Schema and Social pages; link status checking
 - [ ] Highlight overlay: paint headings, nofollow links and missing alt on the
       live page
 - [ ] Chrome Web Store listing

@@ -72,13 +72,13 @@ def main():
         panel = browser.new_page(viewport={"width": 400, "height": 900})
         panel.add_init_script(stub.strip().replace("__SNAP__", json.dumps(snap)))
         panel.goto((APP / "panel.html").as_uri(), wait_until="load")
-        panel.wait_for_selector(".finding, .allclear")
+        panel.wait_for_selector("#out > *")
         timing = panel.evaluate("() => state.timing")
 
         # Switching views must not re-score, only redraw.
         redraw = panel.evaluate("""() => {
             const t = performance.now();
-            document.querySelectorAll('.tab')[1].click();
+            document.querySelectorAll('.tab')[3].click();   // Links: the heaviest page to draw
             return performance.now() - t;
         }""")
         browser.close()

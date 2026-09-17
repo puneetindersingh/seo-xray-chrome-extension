@@ -74,6 +74,8 @@ def main():
     check("width/height attrs", len([i for i in imgs if i["widthAttr"] and i["heightAttr"]]), 1)
     check("lazy", len([i for i in imgs if i["loading"] == "lazy"]), 1)
     check("webp detected", len([i for i in imgs if i["ext"] == "webp"]), 1)
+    # None of the fixture's image files exist, so every one the browser tried is broken.
+    check("a 404 image is read as broken", [i["broken"] for i in imgs if i["src"].endswith("/no-alt.png")], [True])
 
     ld = s["structuredData"]["jsonLd"]
     check("jsonld blocks", len(ld), 2)

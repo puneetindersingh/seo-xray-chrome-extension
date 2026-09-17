@@ -38,7 +38,7 @@ check("self canonical passes", sev(C.indexability(snap()), "canon.self"), "pass"
 check("missing canonical warns", sev(C.indexability(snap({ canonical: { count: 0, href: null, raw: null, all: [] } })), "canon.missing"), "warn");
 check("two canonicals fail", sev(C.indexability(snap({ canonical: { count: 2, href: "https://e.com/a", raw: "/a", all: ["https://e.com/a", "https://e.com/b"] } })), "canon.multiple"), "fail");
 check("cross domain canonical warns", sev(C.indexability(snap({ canonical: { count: 1, href: "https://other.com/x", raw: "https://other.com/x", all: [] } })), "canon.cross-domain"), "warn");
-check("canonical elsewhere on site is a note", sev(C.indexability(snap({ canonical: { count: 1, href: "https://e.com/other", raw: "https://e.com/other", all: [] } })), "canon.other"), "note");
+check("canonical elsewhere on site warns", sev(C.indexability(snap({ canonical: { count: 1, href: "https://e.com/other", raw: "https://e.com/other", all: [] } })), "canon.other"), "warn");
 check("relative canonical noted", sev(C.indexability(snap({ canonical: { count: 1, href: "https://e.com/page", raw: "/page", all: [] } })), "canon.relative"), "note");
 check("meta refresh warns", sev(C.indexability(snap({ metaRefresh: "0;url=/x" })), "index.meta-refresh"), "warn");
 check("http fails", sev(C.indexability(snap({ protocol: "http:" })), "index.http"), "fail");
@@ -48,7 +48,8 @@ check("missing title fails", sev(C.meta(snap({ title: { text: null, count: 0, al
 check("good title passes", sev(C.meta(snap()), "title.ok"), "pass");
 check("long title warns", sev(C.meta(snap({ title: { text: "x".repeat(90), count: 1, all: [] } })), "title.long"), "warn");
 check("measured pixels beat the estimate", sev(C.meta(snap({ title: { text: "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii", count: 1, all: [] } }), { titlePx: 300 }), "title.long"), undefined);
-check("short title noted", sev(C.meta(snap({ title: { text: "Widgets", count: 1, all: [] } })), "title.short"), "note");
+check("short title warns", sev(C.meta(snap({ title: { text: "Widgets", count: 1, all: [] } })), "title.short"), "warn");
+check("short description warns", sev(C.meta(snap({ description: { content: "Widgets for sale.", count: 1 } })), "desc.short"), "warn");
 check("two titles warn", sev(C.meta(snap({ title: { text: "A perfectly reasonable page title here", count: 2, all: ["a", "b"] } })), "title.multiple"), "warn");
 check("title identical to h1 noted", sev(C.meta(snap({ headings: [{ level: 1, text: "A perfectly reasonable page title here", empty: false, hidden: false }] })), "title.same-as-h1"), "note");
 check("missing description warns", sev(C.meta(snap({ description: { content: null, count: 0 } })), "desc.missing"), "warn");
@@ -56,8 +57,9 @@ check("long description warns", sev(C.meta(snap({ description: { content: "x".re
 check("no viewport fails", sev(C.meta(snap({ viewport: null })), "meta.viewport"), "fail");
 check("no lang warns", sev(C.meta(snap({ lang: null })), "meta.lang"), "warn");
 check("no open graph at all warns", sev(C.meta(snap({ og: {} })), "og.missing"), "warn");
-check("partial open graph noted", sev(C.meta(snap({ og: { "og:title": "t" } })), "og.partial"), "note");
-check("og:url mismatch noted", sev(C.meta(snap({ og: { "og:title": "t", "og:description": "d", "og:image": "i", "og:url": "https://e.com/different" } })), "og.url-mismatch"), "note");
+check("open graph without an image warns", sev(C.meta(snap({ og: { "og:title": "t" } })), "og.partial"), "warn");
+check("open graph with an image but no description is a note", sev(C.meta(snap({ og: { "og:title": "t", "og:image": "i" } })), "og.partial"), "note");
+check("og:url mismatch warns", sev(C.meta(snap({ og: { "og:title": "t", "og:description": "d", "og:image": "i", "og:url": "https://e.com/different" } })), "og.url-mismatch"), "warn");
 
 // ---- content ----
 check("no h1 fails", sev(C.content(snap({ headings: [] })), "h1.missing"), "fail");
@@ -115,6 +117,69 @@ check("invalid code warns", sev(C.international(snap({ hreflang: [{ hreflang: "e
 check("valid codes accepted", has(C.international(snap({ hreflang: [{ hreflang: "en-AU", href: "https://e.com/page" }, { hreflang: "zh-Hant-HK", href: "https://e.com/hk" }, { hreflang: "x-default", href: "https://e.com/page" }] })), "hreflang.invalid"), false);
 check("missing self reference warns", sev(C.international(snap({ hreflang: [{ hreflang: "en-NZ", href: "https://e.com/nz" }] })), "hreflang.no-self"), "warn");
 check("missing x-default noted", sev(C.international(snap({ hreflang: [{ hreflang: "en-AU", href: "https://e.com/page" }, { hreflang: "en-NZ", href: "https://e.com/nz" }] })), "hreflang.no-xdefault"), "note");
+
+// ---- per-row marks: the same tests as the findings, one row at a time ----
+const H = (level, text, o = {}) => Object.assign({ level, text, empty: !text, hidden: false, region: "main" }, o);
+const labels = (row) => row.marks.map((m) => m.label);
+const hm = C.markHeadings(snap({ headings: [H(2, "Intro"), H(1, "Main"), H(3, "Skipped"), H(1, "Again"), H(2, ""), H(4, "Hid", { hidden: true }), H(2, "Foot", { region: "footer" })] }));
+check("first H1 carries no mark", labels(hm[1]), []);
+check("second H1 marked extra", labels(hm[3]), ["extra H1"]);
+check("skip marked on the row that skips", labels(hm[2]), ["skips from H1"]);
+check("empty heading marked", hm[4].marks[0].id, "head.empty");
+check("hidden heading marked and not accused of skipping", labels(hm[5]), ["hidden"]);
+check("region shown as context, not a fault", hm[6].marks.map((m) => [m.label, m.severity]), [["footer", null]]);
+check("sole empty H1 fails on the row", C.markHeadings(snap({ headings: [H(1, "")] }))[0].marks[0].severity, "fail");
+check("row skips agree with the finding", C.content(snap({ headings: [H(1, "A"), H(3, "B"), H(5, "C")] }))
+  .find((f) => f.id === "head.skipped").title, "The heading order skips a level (H1 to H3, H3 to H5)");
+
+const lm = C.markLinks(snap({ links: [link({ text: "" }), link({ rel: "nofollow" }), link({ rel: "nofollow sponsored", internal: false }),
+  { kind: "no-href", text: "x", rel: null, internal: null }, link({ text: "read more" })] }));
+check("empty anchor marked warn", lm[0].marks.map((m) => [m.label, m.severity]), [["no anchor text", "warn"]]);
+check("internal nofollow marked warn", lm[1].marks.map((m) => m.severity), ["warn"]);
+check("external nofollow is context only", lm[2].marks.map((m) => [m.label, m.severity]), [["nofollow", null], ["sponsored", null]]);
+check("no href marked", lm[3].marks[0].id, "link.no-href");
+check("generic anchor marked", lm[4].marks[0].label, "generic anchor");
+
+const im = C.markImages(snap({ images: [img({ hasAlt: false }), img({ alt: "" }), img({ broken: true }), img({ broken: true, ext: "svg" }),
+  img({ naturalWidth: 2000, displayWidth: 500 })] }));
+check("missing alt marked warn", im[0].marks.map((m) => [m.label, m.severity]), [["no alt", "warn"]]);
+check("empty alt is context only", im[1].marks.map((m) => m.severity), [null]);
+check("broken image marked fail", im[2].marks[0].severity, "fail");
+check("an svg reporting zero size is not called broken", im[3].marks, []);
+check("oversize ratio shown", im[4].marks[0].label, "4.0x too big");
+check("broken image finding fails", sev(C.images(snap({ images: [img({ broken: true })] })), "img.broken"), "fail");
+
+const sm = C.markSchema(snap({ structuredData: { jsonLd: [
+  { ok: false, error: "Unexpected token", preview: "{" },
+  { ok: true, data: { "@graph": [{ "@type": "Article", "@id": "#a", headline: "H" }, { "@type": "WebPage" }] } }] } }));
+check("broken block marked fail", sm[0].severity, "fail");
+check("graph nodes listed", sm[1].nodes.map((n) => n.types[0]), ["Article", "WebPage"]);
+check("missing required named per node", sm[1].nodes[0].missing, ["image", "datePublished", "author"]);
+check("a block with gaps is amber", sm[1].severity, "warn");
+const hl = C.markHreflang(snap({ hreflang: [{ hreflang: "en_AU", href: "https://e.com/x" }, { hreflang: "en-AU", href: "https://e.com/page/" }] }));
+check("invalid hreflang code marked", [hl[0].valid, hl[0].severity], [false, "warn"]);
+check("self reference found despite trailing slash", hl[1].self, true);
+
+const v = C.linkStatusVerdict;
+check("200 passes", v({ status: 200 }), { severity: "pass", label: "200" });
+check("404 is broken", v({ status: 404 }).severity, "fail");
+check("500 is broken", v({ status: 503 }).severity, "fail");
+check("403 is a bot wall, not broken", v({ status: 403 }).severity, "warn");
+check("a redirect is amber", v({ status: 200, redirected: true }), { severity: "warn", label: "redirect 200" });
+check("a dead host is broken", v({ status: 0, error: "Failed to fetch" }).label, "failed");
+check("a timeout says so", v({ status: 0, error: "timed out" }).label, "timeout");
+
+const lsf = C.linkStatusFindings({
+  a: { url: "https://e.com/a", status: 404 }, b: { url: "https://e.com/b", status: 200, redirected: true },
+  c: { url: "https://x.com/c", status: 403 }, d: { url: "https://e.com/d", status: 200 },
+});
+check("broken links become a failure", sev(lsf, "link.broken"), "fail");
+check("and name the URL with its status", lsf.find((f) => f.id === "link.broken").detail.startsWith("https://e.com/a (404)"), true);
+check("redirects become a warning", sev(lsf, "link.redirect"), "warn");
+check("a bot wall is its own warning, not a broken link", [sev(lsf, "link.blocked"), lsf.find((f) => f.id === "link.broken").title], ["warn", "1 link is broken"]);
+check("a clean check says so", sev(C.linkStatusFindings({ a: { url: "u", status: 200 } }), "link.status-ok"), "pass");
+check("no check, no findings", C.linkStatusFindings({}), []);
+check("status findings carry fixes", lsf.every((f) => f.fix), true);
 
 // ---- the whole audit ----
 const bad = C.audit(snap({

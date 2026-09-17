@@ -44,12 +44,15 @@ STUB = r"""
     "https://example.com/llms.txt": [404, "", "text/plain"],
     "https://example.com/llms-full.txt": [404, "", "text/plain"],
   };
+  globalThis.__routes = routes;
   globalThis.__calls = [];
-  globalThis.fetch = async (url) => {
+  globalThis.__requests = [];
+  globalThis.fetch = async (url, opts = {}) => {
     globalThis.__calls.push(url);
-    const [status, body, type] = routes[url] || [404, "", "text/plain"];
+    globalThis.__requests.push([url, opts.method || "GET"]);
+    const [status, body, type, finalUrl] = routes[url] || [404, "", "text/plain"];
     return {
-      url, status, ok: status >= 200 && status < 300, redirected: false,
+      url: finalUrl || url, status, ok: status >= 200 && status < 300, redirected: !!finalUrl,
       headers: { entries: () => [["content-type", type], ["x-robots-tag", "noarchive"]] },
       text: async () => body,
     };
@@ -75,6 +78,8 @@ def main():
         # stand in for a real site, which is what the panel would be pointed at.
         snap.update(url="https://example.com/widgets", origin="https://example.com",
                     host="example.com", protocol="https:")
+        # Links and images too, so the screenshots read like a real site rather than a port number.
+        snap = json.loads(json.dumps(snap).replace(base, "https://example.com"))
         # Long real-world hostnames, which is what made the card overflow the panel.
         hosts = [
             {"host": "www.googletagmanager.com", "count": 4, "thirdParty": True, "how": ["script"]},
@@ -95,17 +100,53 @@ def main():
         panel.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
         panel.add_init_script(STUB.strip().replace("__SNAP__", json.dumps(snap)))
         panel.goto((APP / "panel.html").as_uri(), wait_until="load")
-        panel.wait_for_selector(".finding")
+        panel.wait_for_selector(".pcard")
 
         # ---- shell ----
         check("no page errors", errors, [])
         check("page title shown", panel.inner_text("#page-title"), "Cheap Widgets Melbourne | Widget Co")
         check("notice hidden", panel.is_visible("#notice"), False)
-        tabs = panel.eval_on_selector_all(".tab", "els => els.map(e => e.textContent.replace(/[0-9]+$/, ''))")
-        check("five views", tabs, ["Issues", "Page", "Tech", "AI", "Data"])
-        check("issues opens first", panel.eval_on_selector(".tab[aria-selected=true]", "e => e.textContent").startswith("Issues"), True)
+        tabs = panel.eval_on_selector_all(".tab", "els => els.map(e => e.firstChild.textContent)")
+        check("ten views", tabs, ["Summary", "Issues", "Headings", "Links", "Images", "Schema", "Social", "Tech", "AI", "Data"])
+        check("summary opens first", panel.eval_on_selector(".tab[aria-selected=true]", "e => e.firstChild.textContent"), "Summary")
+        tab = lambda name: panel.click(f".tab:has(> span:text-is('{name}'))")
+        badge = lambda name: panel.eval_on_selector(f".tab:has(> span:text-is('{name}'))", "e => { const b = e.querySelector('.badge'); return b ? b.className.split(' ')[1] + ':' + b.textContent : null; }")
+        check("a tab with a failure wears a red badge", badge("Summary").startswith("fail:"), True)
+        check("a tab with only warnings wears an amber badge", badge("Headings"), "warn:1")
+        check("the data tab never carries a badge", badge("Data"), None)
+        no_sideways = lambda: panel.evaluate("() => document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+        top = lambda: panel.evaluate("() => document.querySelector('main').scrollTo(0, 0)")
+
+        # ---- summary ----
+        rows = panel.eval_on_selector_all(".row", "els => els.map(e => e.querySelector('.row-label').textContent)")
+        for want in ["Title", "Description", "URL", "Canonical", "Robots meta", "X-Robots-Tag", "H1", "Word count", "Lang", "Viewport", "Charset"]:
+            check(f"summary row '{want}'", want in rows, True)
+        row = lambda label: f".row:has(> .row-head > .row-label:text-is('{label}'))"
+        pill_of = lambda label: panel.eval_on_selector(row(label), "e => { const p = e.querySelector('.row-head .pill'); return p ? p.className.replace('pill ', '') + ':' + p.textContent : null; }")
+        check("missing viewport is a red pill", pill_of("Viewport"), "fail:\u2715Missing")
+        check("and its row is marked red", panel.eval_on_selector(row("Viewport"), "e => e.classList.contains('fail')"), True)
+        check("the reason is written under it", "No viewport tag" in panel.inner_text(row("Viewport")), True)
+        check("missing description is amber", pill_of("Description"), "warn:!Missing")
+        check("title pill carries characters and pixels", ("chars" in pill_of("Title"), "px" in pill_of("Title")), (True, True))
+        check("self canonical is green", pill_of("Canonical"), "pass:\u2713Self")
+        check("two H1s are amber", pill_of("H1"), "warn:!2 H1s")
+        check("red really is red", panel.eval_on_selector(".row .pill.fail", "e => getComputedStyle(e).backgroundColor"), "rgb(217, 45, 32)")
+        check("header waits for the run", "Run site checks to read" in panel.inner_text(row("X-Robots-Tag")), True)
+        fails = panel.eval_on_selector(".hcell.fail b", "e => Number(e.textContent)")
+        check("health strip counts the same failures as Issues", fails >= 2, True)
+        check("H1 count cell is amber", panel.eval_on_selector(".ccell:has(> span:text-is('H1'))", "e => e.classList.contains('warn')"), True)
+        check("robots.txt link opens the site's file", panel.eval_on_selector(".quick .xlink", "e => [e.href, e.target]"), ["https://example.com/robots.txt", "_blank"])
+        check("summary fits the panel", no_sideways(), True)
+        check("no em dash on the summary", "\u2014" in panel.inner_text("body"), False)
+        top()
+        panel.screenshot(path=str(ROOT / "ui-summary.png"), full_page=True)
+        panel.click(".health .hcell.fail")
+        check("a health cell opens Issues filtered to it", (panel.eval_on_selector(".tab[aria-selected=true]", "e => e.firstChild.textContent"),
+              panel.eval_on_selector_all(".finding", "els => els.every(e => e.classList.contains('fail'))")), ("Issues", True))
+        panel.evaluate("() => { state.show = { fail: true, warn: true, note: true, pass: false }; render(); }")
 
         # ---- issues ----
+        panel.wait_for_selector(".finding")
         text = panel.inner_text("#out")
         check("verdict headline", "to fix" in panel.inner_text(".verdict"), True)
         tiles = panel.eval_on_selector_all(".tile", "els => els.map(e => e.className.split(' ')[1] + ':' + e.querySelector('b').textContent)")
@@ -139,18 +180,102 @@ def main():
         panel.click(".tile.note")
         check("and turning them back on restores them", panel.eval_on_selector_all(".finding", "e => e.length"), before)
 
-        # ---- page view ----
-        panel.click(".tab >> nth=1")
-        cards = panel.eval_on_selector_all("details.card > summary", "els => els.map(e => e.firstChild.textContent.trim())")
-        for want in ["Indexing", "Title and meta", "Heading outline", "Links", "Images", "Structured data", "Hreflang"]:
-            check(f"page card '{want}'", want in cards, True)
-        check("outline rows", panel.eval_on_selector_all("ul.outline li", "e => e.length"), 7)
-        check("title measured in pixels", "px" in panel.inner_text("#out"), True)
-        panel.evaluate("() => document.querySelector('main').scrollTo(0, 0)")
-        panel.screenshot(path=str(ROOT / "ui-page.png"), full_page=True)
+        # ---- headings ----
+        tab("Headings")
+        oh = ".outline2 > li"
+        check("outline rows", panel.eval_on_selector_all(oh, "e => e.length"), 7)
+        marks = panel.eval_on_selector_all(oh, "els => els.map(e => [...e.querySelectorAll('.omarks .pill')].map(p => [...p.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('')).join('|'))")
+        check("second H1 marked extra", marks[2], "extra H1")
+        check("skip marked on the H3", marks[3], "skips from H1")
+        check("empty heading marked", marks[4], "empty")
+        check("hidden heading marked", marks[5], "hidden")
+        check("nav and footer shown as context", (marks[0], marks[6]), ("nav", "footer"))
+        check("the extra H1 row is amber", panel.eval_on_selector_all(oh, "els => els[2].classList.contains('warn')"), True)
+        check("the hidden row is dimmed", panel.eval_on_selector_all(oh, "els => els[5].classList.contains('dim')"), True)
+        check("deeper levels sit further in", panel.eval_on_selector_all(oh,
+              "els => parseFloat(getComputedStyle(els[3]).paddingLeft) > parseFloat(getComputedStyle(els[1]).paddingLeft)"), True)
+        check("H1 level cell is amber", panel.eval_on_selector(".lcell:first-child", "e => e.classList.contains('warn')"), True)
+        check("problems listed above the outline", "2 H1 headings" in panel.inner_text(".flags"), True)
+        check("copy outline offered", panel.is_visible("text=Copy outline"), True)
+        check("headings fit the panel", no_sideways(), True)
+        top()
+        panel.screenshot(path=str(ROOT / "ui-headings.png"), full_page=True)
+
+        # ---- links ----
+        tab("Links")
+        tiles = dict(panel.eval_on_selector_all(".ftile", "els => els.map(e => [e.querySelector('span').textContent, Number(e.querySelector('b').textContent)])"))
+        check("link filter counts", [tiles[k] for k in ["All", "Internal", "External", "Nofollow"]], [9, 5, 3, 1])
+        lk = ".links > .lk"
+        check("every link listed", panel.eval_on_selector_all(lk, "e => e.length"), 9)
+        check("empty anchor row is amber", panel.eval_on_selector_all(lk, "els => els.some(e => e.classList.contains('warn') && e.textContent.includes('no anchor text'))"), True)
+        check("external nofollow is context, not a fault", panel.eval_on_selector_all(".lk-tags .pill", "els => els.filter(p => /nofollow/.test(p.textContent)).map(p => p.className)"), ["pill plain"])
+        check("no status requests before the click", any(m == "HEAD" for _, m in panel.evaluate("() => __requests")), False)
+        panel.click(".ftile:has(> span:text-is('Problems'))")
+        check("problems filter keeps only amber and red rows", panel.eval_on_selector_all(lk, "els => els.length > 0 && els.every(e => e.classList.contains('warn') || e.classList.contains('fail'))"), True)
+        panel.click(".ftile:has(> span:text-is('All'))")
+
+        base_url = snap["links"][0]["href"].rsplit("/", 1)[0]
+        panel.evaluate("""b => Object.assign(__routes, {
+            [b + '/about']: [200, '', 'text/html'],
+            [b + '/contact']: [200, '', 'text/html', b + '/contact-us'],
+            'https://partner.example.org/x': [403, '', 'text/html'],
+            'https://other.example.org/y': [200, '', 'text/html'],
+        })""", base_url)
+        panel.click("#check-status")
+        panel.wait_for_selector("#check-status:text-is('Check again')")
+        heads = [u for u, m in panel.evaluate("() => __requests") if m == "HEAD"]
+        check("one HEAD per unique URL", len(heads), len(set(heads)))
+        check("every unique link was checked", len(heads), 8)
+        status = dict(panel.eval_on_selector_all(lk, "els => els.filter(e => e.querySelector('.lk-head .pill')).map(e => [e.dataset.url.replace(/^https?:\\/\\/[^/]+/, ''), e.querySelector('.lk-head .pill').className.replace('pill ', '') + ':' + e.querySelector('.lk-head .pill').textContent.replace(/^[^0-9a-z]+/i, '')])"))
+        check("a 200 is green", status["/about"], "pass:200")
+        check("a 404 is red", status["/services"], "fail:404")
+        check("a redirect is amber", status["/contact"], "warn:redirect 200")
+        check("a 403 is amber, not called broken", status["/x"], "warn:403")
+        check("a broken link turns its row red", panel.eval_on_selector_all(lk, "els => els.some(e => e.classList.contains('fail'))"), True)
+        check("the tally is shown", "broken" in panel.inner_text(".statusbar"), True)
+        check("broken links turn the Links badge red", badge("Links").startswith("fail:"), True)
+        check("and reach the problems listed above", "links are broken" in panel.inner_text(".flags"), True)
+        check("and the copied report", "links are broken" in panel.evaluate("() => report()"), True)
+        check("links fit the panel", no_sideways(), True)
+        check("every url is one line", panel.eval_on_selector_all(".lk-url", "els => els.every(e => e.getBoundingClientRect().height < 24)"), True)
+        top()
+        panel.screenshot(path=str(ROOT / "ui-links.png"), full_page=True)
+
+        # ---- images ----
+        tab("Images")
+        tiles = dict(panel.eval_on_selector_all(".ftile", "els => els.map(e => [e.querySelector('span').textContent, Number(e.querySelector('b').textContent)])"))
+        check("image filter counts", [tiles["All"], tiles["No alt"]], [3, 1])
+        # The fixture's image files do not exist, so the browser really did fail to load them.
+        check("images that failed to load are counted broken", tiles["Broken"] >= 2, True)
+        check("broken outranks missing alt on the row", panel.eval_on_selector_all(".imgs > .im", "els => els.some(e => e.classList.contains('fail') && e.textContent.includes('no alt attribute'))"), True)
+        check("and the Images tab wears a red badge", badge("Images").startswith("fail:"), True)
+        check("alt text shown", "Widget installer at work" in panel.inner_text("#out"), True)
+        check("images fit the panel", no_sideways(), True)
+        top()
+        panel.screenshot(path=str(ROOT / "ui-images.png"), full_page=True)
+
+        # ---- schema ----
+        tab("Schema")
+        heads = panel.eval_on_selector_all(".pcard .pcard-head", "els => els.map(e => e.textContent)")
+        check("broken block is red", any(h.startswith("Block 2") and "Does not parse" in h for h in heads), True)
+        check("service without provider is amber", any(h.startswith("Block 1") and "Incomplete" in h for h in heads), True)
+        check("hreflang listed", "en-nz" in panel.inner_text("#out"), True)
+        check("rich results test link carries the URL", "example.com" in panel.eval_on_selector(".quick .xlink", "e => e.href"), True)
+        check("schema fits the panel", no_sideways(), True)
+        top()
+        panel.screenshot(path=str(ROOT / "ui-schema.png"), full_page=True)
+
+        # ---- social ----
+        tab("Social")
+        check("og:title present is green", pill_of("og:title"), "pass:\u2713")
+        check("og:description gap flagged", pill_of("og:description").endswith("Missing"), True)
+        check("twitter gaps explain the fallback", "X uses og:title" in panel.inner_text(row("twitter:title")), True)
+        check("social fits the panel", no_sideways(), True)
+        top()
+        panel.screenshot(path=str(ROOT / "ui-social.png"), full_page=True)
 
         # ---- tech view, built with no network ----
-        panel.click(".tab >> nth=2")
+        tab("Tech")
         tech = panel.inner_text("#out")
         check("verdict in plain words", "instrumented" in tech, True)
         check("GTM container id read", "GTM-TEST123" in tech, True)
@@ -196,7 +321,7 @@ def main():
         panel.wait_for_selector(".finding")
         panel.wait_for_function("() => !document.querySelector('#run').disabled")
         ai = panel.inner_text("#out")
-        check("the run switches to the AI view", panel.eval_on_selector(".tab[aria-selected=true]", "e => e.textContent"), "AI")
+        check("the run switches to the AI view", panel.eval_on_selector(".tab[aria-selected=true]", "e => e.firstChild.textContent"), "AI")
         check("shell page fails the JS gap", "without JavaScript" in ai, True)
         check("missing internal links caught", "No internal links exist before JavaScript runs" in ai, True)
         check("GPTBot block reported", "GPTBot" in ai, True)
@@ -212,13 +337,15 @@ def main():
         panel.screenshot(path=str(ROOT / "ui-ai.png"), full_page=True)
 
         # the run feeds the other views
-        panel.click(".tab >> nth=2")
+        tab("Tech")
         check("security grade appears after the run", "Security headers" in panel.inner_text("#out"), True)
-        panel.click(".tab >> nth=0")
+        tab("Issues")
         check("header directives reach the page checks", "noarchive" in panel.inner_text("#out").lower(), True)
+        tab("Summary")
+        check("the header value reaches the summary", panel.inner_text(row("X-Robots-Tag")).strip().endswith("noarchive"), True)
 
         # ---- data view ----
-        panel.click(".tab >> nth=4")
+        tab("Data")
         data = panel.inner_text("#out")
         check("timing shown", "read the page" in data, True)
         check("serialised html kept out of the dump", "omitted here" in data, True)

@@ -207,6 +207,8 @@ globalThis.__seoExtract = function buildSnapshot(doc, opts = {}) {
       decoding: attr(img, "decoding"),
       widthAttr: attr(img, "width"),
       heightAttr: attr(img, "height"),
+      // Finished loading and produced no picture. Only a live read can know this.
+      broken: live ? !!(img.complete && !img.naturalWidth && img.getAttribute("src")) : null,
       naturalWidth: live ? (img.naturalWidth || 0) : null,
       naturalHeight: live ? (img.naturalHeight || 0) : null,
       displayWidth: r ? Math.round(r.width) : null,

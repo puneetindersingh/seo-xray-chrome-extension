@@ -1,6 +1,6 @@
 # Privacy Policy, SEO Xray
 
-**Last updated: 16 September 2026**
+**Last updated: 17 September 2026**
 
 SEO Xray does not collect, store, transmit or sell any personal data. There is
 no account, no API key, no analytics and no server belonging to this project.
@@ -13,8 +13,9 @@ navigate, and discarded when you close the panel.
 
 ## What happens when you press Run site checks
 
-This is the only action that requests anything over the network, and it never
-fires on its own. It requests from the site you are already visiting:
+This and Check status, below, are the only actions that request anything over
+the network, and neither fires on its own. Run site checks requests from the site
+you are already visiting:
 
 - the page's raw HTML, as the server sends it
 - `/robots.txt`
@@ -28,6 +29,17 @@ whether the site treats those crawlers differently.
 Every one of those requests goes to the site you are on. None goes to any third
 party, and none goes to the developer.
 
+## What happens when you press Check status on the Links tab
+
+The panel sends a HEAD request (or a GET that is cut off once the headers arrive,
+if the server refuses HEAD) to each unique link on the page, up to 300 of them.
+That includes links to other websites, because a link to another site can be
+broken too. The requests carry no cookies. Only the status code and the final URL
+are read, they are shown in the panel, and they are discarded when you navigate.
+
+The panel does not load images from the page, so opening the Images or Social tab
+requests nothing.
+
 ## What is stored
 
 One value in `chrome.storage` and browser local storage: which tab of the panel
@@ -36,8 +48,8 @@ it stays on your machine.
 
 ## Permissions
 
-`<all_urls>` host access is what lets the panel read whichever tab you are on and
-fetch that site's robots.txt. It is not used to watch your browsing. The
+`<all_urls>` host access is what lets the panel read whichever tab you are on,
+fetch that site's robots.txt, and check the links on it when you ask. It is not used to watch your browsing. The
 extension has no background network activity and no remote code.
 
 ## Your data

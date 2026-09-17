@@ -81,7 +81,7 @@
           `This page hands its ranking to ${canon}.`,
           "Correct unless this really is syndicated content."));
       } else if (canon !== here) {
-        out.push(F("note", "indexability", "canon.other", "The canonical points at a different URL",
+        out.push(F("warn", "indexability", "canon.other", "The canonical points at a different URL",
           `This page asks to be indexed as ${canon}.`,
           "Right for a filtered or paginated view. Wrong if this page has content of its own."));
       } else {
@@ -120,7 +120,7 @@
           `About ${px}px wide, the cut-off is near ${TITLE_PX_LIMIT}px, so the end gets truncated.`,
           "Move the important words to the front and shorten the tail."));
       } else if (t.length < 30) {
-        out.push(F("note", "meta", "title.short", `The title is only ${t.length} characters`,
+        out.push(F("warn", "meta", "title.short", `The title is only ${t.length} characters`,
           "There is room left that could carry another term someone searches for.", "Expand it."));
       } else {
         out.push(F("pass", "meta", "title.ok", `Title is ${t.length} characters`, t, null));
@@ -146,7 +146,7 @@
         out.push(F("warn", "meta", "desc.long", `The description will be cut short (${d.length} chars)`,
           `About ${px}px, the cut-off is near ${DESC_PX_LIMIT}px.`, "Put the point in the first sentence."));
       } else if (d.length < 70) {
-        out.push(F("note", "meta", "desc.short", `The description is only ${d.length} characters`,
+        out.push(F("warn", "meta", "desc.short", `The description is only ${d.length} characters`,
           "Short descriptions leave the result looking thin next to the ones around it.", "Use the space."));
       } else {
         out.push(F("pass", "meta", "desc.ok", `Description is ${d.length} characters`, d, null));
@@ -174,19 +174,54 @@
         "Shares on social and in chat apps fall back to whatever the platform scrapes, which is rarely what you would choose.",
         "Add og:title, og:description and og:image."));
     } else if (missingOg.length) {
-      out.push(F("note", "meta", "og.partial", `Open Graph is missing ${missingOg.join(", ")}`,
+      // No image is the gap people notice: the share turns into a grey box.
+      out.push(F(missingOg.includes("og:image") ? "warn" : "note", "meta", "og.partial", `Open Graph is missing ${missingOg.join(", ")}`,
         missingOg.includes("og:image") ? "Without an image the share is a grey box." : "Partial tags give an inconsistent preview.",
         "Fill the gaps."));
     }
     if (og["og:url"] && s.canonical.href && og["og:url"].split("#")[0] !== s.canonical.href.split("#")[0]) {
-      out.push(F("note", "meta", "og.url-mismatch", "og:url and the canonical disagree",
+      out.push(F("warn", "meta", "og.url-mismatch", "og:url and the canonical disagree",
         `og:url is ${og["og:url"]}, canonical is ${s.canonical.href}.`, "Point both at the same URL."));
     }
     return out;
   }
 
+  /**
+   * Per-heading marks for the outline view. The aggregate heading findings below
+   * are counted from these same marks, so a row and the Issues tab can never
+   * disagree about what is wrong.
+   */
+  function markHeadings(s) {
+    const heads = s.headings || [];
+    const h1Total = heads.filter((h) => h.level === 1).length;
+    let h1Seen = 0;
+    let prev = null;   // last visible heading with text, which is what the skip rule compares against
+    return heads.map((h) => {
+      const marks = [];
+      if (h.level === 1) {
+        h1Seen++;
+        if (h1Seen > 1) marks.push({ severity: "warn", id: "h1.multiple", label: "extra H1" });
+      }
+      if (h.hidden) {
+        marks.push({ severity: null, id: "head.hidden", label: "hidden" });
+      } else if (h.empty) {
+        // The only H1 being empty is its own failure; any other empty tag is builder litter.
+        const soleH1 = h.level === 1 && h1Total === 1;
+        marks.push({ severity: soleH1 ? "fail" : "note", id: soleH1 ? "h1.empty" : "head.empty", label: "empty" });
+      } else {
+        if (prev !== null && h.level - prev > 1) {
+          marks.push({ severity: "note", id: "head.skipped", label: `skips from H${prev}`, from: prev });
+        }
+        prev = h.level;
+      }
+      if (h.region && !["main", "body"].includes(h.region)) marks.push({ severity: null, id: "head.region", label: h.region });
+      return { heading: h, marks };
+    });
+  }
+
   function content(s) {
     const out = [];
+    const rows = markHeadings(s);
     const h1s = s.headings.filter((h) => h.level === 1);
     if (!h1s.length) {
       out.push(F("fail", "content", "h1.missing", "No H1",
@@ -204,15 +239,13 @@
       out.push(F("pass", "content", "h1.ok", "One H1", h1s[0].text, null));
     }
 
-    const visible = s.headings.filter((h) => !h.hidden);
-    const empties = visible.filter((h) => h.empty);
+    const empties = rows.filter((r) => r.marks.some((m) => m.id === "head.empty"));
     if (empties.length) {
       out.push(F("note", "content", "head.empty", `${empties.length} empty heading tag${empties.length > 1 ? "s" : ""}`,
         "Heading tags with no text, usually left behind by a page builder.", "Remove them or fill them."));
     }
-    const levels = visible.filter((h) => !h.empty).map((h) => h.level);
     const skips = [];
-    for (let i = 1; i < levels.length; i++) if (levels[i] - levels[i - 1] > 1) skips.push(`H${levels[i - 1]} to H${levels[i]}`);
+    for (const r of rows) for (const m of r.marks) if (m.id === "head.skipped") skips.push(`H${m.from} to H${r.heading.level}`);
     if (skips.length) {
       out.push(F("note", "content", "head.skipped", `The heading order skips a level (${list(skips, 2)})`,
         "The outline is what a machine reads to work out how the page is organised.",
@@ -239,24 +272,45 @@
   }
 
   const GENERIC_ANCHORS = /^(click here|here|read more|learn more|more|this|link|find out more|see more|details|view)$/i;
+  const isNofollow = (l) => /(^|\s)nofollow(\s|$)/i.test(l.rel || "");
+  const LINK_TESTS = {
+    noText: (l) => l.kind === "link" && !l.text && !l.ariaLabel && !l.hasImage,
+    generic: (l) => l.kind === "link" && GENERIC_ANCHORS.test((l.text || "").trim()),
+    internalNofollow: (l) => l.kind === "link" && l.internal === true && isNofollow(l),
+    noHref: (l) => l.kind === "no-href",
+  };
+
+  /** Per-link marks for the links view, built from the same tests as the findings. */
+  function markLinks(s) {
+    return (s.links || []).map((l) => {
+      const marks = [];
+      if (LINK_TESTS.noHref(l)) marks.push({ severity: "note", id: "link.no-href", label: "no href" });
+      if (LINK_TESTS.noText(l)) marks.push({ severity: "warn", id: "link.no-text", label: "no anchor text" });
+      if (LINK_TESTS.internalNofollow(l)) marks.push({ severity: "warn", id: "link.internal-nofollow", label: "nofollow" });
+      else if (isNofollow(l)) marks.push({ severity: null, id: "link.nofollow", label: "nofollow" });
+      for (const r of ["sponsored", "ugc"]) if (new RegExp(`(^|\\s)${r}(\\s|$)`, "i").test(l.rel || "")) marks.push({ severity: null, id: "link." + r, label: r });
+      if (LINK_TESTS.generic(l)) marks.push({ severity: "note", id: "link.generic", label: "generic anchor" });
+      return { link: l, marks };
+    });
+  }
 
   function links(s) {
     const out = [];
     const real = s.links.filter((l) => l.kind === "link");
     const internal = real.filter((l) => l.internal === true);
-    const noText = real.filter((l) => !l.text && !l.ariaLabel && !l.hasImage);
+    const noText = real.filter(LINK_TESTS.noText);
     if (noText.length) {
       out.push(F("warn", "links", "link.no-text", `${noText.length} link${noText.length > 1 ? "s have" : " has"} no anchor text`,
         `Nothing to read and nothing to click: ${list(noText.map((l) => l.href).filter(Boolean), 2)}.`,
         "Give each one visible text, or an aria-label if it is an icon."));
     }
-    const generic = real.filter((l) => GENERIC_ANCHORS.test((l.text || "").trim()));
+    const generic = real.filter(LINK_TESTS.generic);
     if (generic.length > 2) {
       out.push(F("note", "links", "link.generic", `${generic.length} links say things like "read more"`,
         "Anchor text is a signal about the page being linked to, and this spends it on nothing.",
         "Say what is on the other end."));
     }
-    const noFollowInternal = internal.filter((l) => /(^|\s)nofollow(\s|$)/i.test(l.rel || ""));
+    const noFollowInternal = real.filter(LINK_TESTS.internalNofollow);
     if (noFollowInternal.length) {
       out.push(F("warn", "links", "link.internal-nofollow", `${noFollowInternal.length} internal link${noFollowInternal.length > 1 ? "s are" : " is"} nofollow`,
         `To ${list(noFollowInternal.map((l) => l.href).filter(Boolean), 2)}. Sculpting links this way has not worked for over a decade, it just wastes the link.`,
@@ -268,7 +322,7 @@
         "Crawlers do not follow these, so whatever is on the other side is undiscoverable from here.",
         "Use a real href and attach behaviour with an event listener."));
     }
-    const noHref = s.links.filter((l) => l.kind === "no-href").length;
+    const noHref = s.links.filter(LINK_TESTS.noHref).length;
     if (noHref > 2) {
       out.push(F("note", "links", "link.no-href", `${noHref} anchor tags have no href`,
         "An <a> without an href is not a link to anything.", "Give them one, or use a button."));
@@ -287,11 +341,44 @@
     return out;
   }
 
+  const IMAGE_TESTS = {
+    // Only a live read can know: the browser finished the request and got no picture.
+    // SVGs without intrinsic size also report 0, so they are left out rather than accused.
+    broken: (i) => i.broken === true && i.ext !== "svg",
+    noAlt: (i) => !i.hasAlt && !i.hidden,
+    decorative: (i) => i.hasAlt && !i.alt,
+    oversized: (i) => !!(i.naturalWidth && i.displayWidth > 20 && i.naturalWidth > i.displayWidth * 2),
+    noDims: (i) => (!i.widthAttr || !i.heightAttr) && !i.hidden,
+    lazyTop: (i) => i.loading === "lazy" && i.inViewport === true,
+    oldFormat: (i) => ["jpg", "jpeg", "png"].includes(i.ext),
+  };
+
+  /** Per-image marks for the images view. */
+  function markImages(s) {
+    return (s.images || []).map((i) => {
+      const marks = [];
+      if (IMAGE_TESTS.broken(i)) marks.push({ severity: "fail", id: "img.broken", label: "broken" });
+      if (IMAGE_TESTS.noAlt(i)) marks.push({ severity: "warn", id: "img.no-alt", label: "no alt" });
+      else if (IMAGE_TESTS.decorative(i)) marks.push({ severity: null, id: "img.decorative", label: "alt=\"\"" });
+      if (IMAGE_TESTS.oversized(i)) marks.push({ severity: "warn", id: "img.oversized", label: `${(i.naturalWidth / i.displayWidth).toFixed(1)}x too big` });
+      if (IMAGE_TESTS.noDims(i)) marks.push({ severity: "warn", id: "img.no-dims", label: "no width/height" });
+      if (IMAGE_TESTS.lazyTop(i)) marks.push({ severity: "warn", id: "img.lazy-lcp", label: "lazy above fold" });
+      if (i.hidden) marks.push({ severity: null, id: "img.hidden", label: "hidden" });
+      return { image: i, marks };
+    });
+  }
+
   function images(s) {
     const out = [];
     const imgs = s.images || [];
     if (!imgs.length) return out;
-    const noAlt = imgs.filter((i) => !i.hasAlt && !i.hidden);
+    const broken = imgs.filter(IMAGE_TESTS.broken);
+    if (broken.length) {
+      out.push(F("fail", "images", "img.broken", `${broken.length} image${broken.length > 1 ? "s" : ""} did not load`,
+        `The browser asked for ${list(broken.map((i) => (i.src || "").split("/").pop()).filter(Boolean), 2)} and got nothing it could draw.`,
+        "Fix the path or remove the tag. A broken image in the content reads as a neglected page."));
+    }
+    const noAlt = imgs.filter(IMAGE_TESTS.noAlt);
     if (noAlt.length) {
       out.push(F("warn", "images", "img.no-alt", `${noAlt.length} of ${imgs.length} images have no alt attribute`,
         `Missing on ${list(noAlt.map((i) => (i.src || "").split("/").pop()).filter(Boolean), 2)}. Screen readers announce the file name instead.`,
@@ -300,26 +387,26 @@
       out.push(F("pass", "images", "img.alt-ok", `All ${imgs.length} images have an alt attribute`, null, null));
     }
 
-    const oversized = imgs.filter((i) => i.naturalWidth && i.displayWidth > 20 && i.naturalWidth > i.displayWidth * 2);
+    const oversized = imgs.filter(IMAGE_TESTS.oversized);
     if (oversized.length) {
       const worst = oversized.sort((a, b) => b.naturalWidth / b.displayWidth - a.naturalWidth / a.displayWidth)[0];
       out.push(F("warn", "images", "img.oversized", `${oversized.length} image${oversized.length > 1 ? "s are" : " is"} far larger than displayed`,
         `Worst: ${(worst.src || "").split("/").pop()} is ${worst.naturalWidth}px wide, shown at ${worst.displayWidth}px. Every visitor downloads the difference.`,
         "Serve them at the size they are shown, with srcset for other screens."));
     }
-    const noDims = imgs.filter((i) => (!i.widthAttr || !i.heightAttr) && !i.hidden);
+    const noDims = imgs.filter(IMAGE_TESTS.noDims);
     if (noDims.length) {
       out.push(F("warn", "images", "img.no-dims", `${noDims.length} image${noDims.length > 1 ? "s have" : " has"} no width and height`,
         "The browser cannot reserve space, so the page jumps as images load. That is what Cumulative Layout Shift measures.",
         "Put width and height attributes on every img."));
     }
-    const lazyTop = imgs.filter((i) => i.loading === "lazy" && i.inViewport);
+    const lazyTop = imgs.filter(IMAGE_TESTS.lazyTop);
     if (lazyTop.length) {
       out.push(F("warn", "images", "img.lazy-lcp", `${lazyTop.length} image${lazyTop.length > 1 ? "s" : ""} above the fold ${lazyTop.length > 1 ? "are" : "is"} lazy loaded`,
         "Lazy loading the first thing on screen delays it, and it is usually the element Largest Contentful Paint is timing.",
         'Load the hero image eagerly, with fetchpriority="high".'));
     }
-    const old = imgs.filter((i) => ["jpg", "jpeg", "png"].includes(i.ext));
+    const old = imgs.filter(IMAGE_TESTS.oldFormat);
     if (old.length > 3) {
       out.push(F("note", "images", "img.format", `${old.length} images are still jpg or png`,
         "WebP or AVIF is usually 25 to 50 percent smaller at the same quality.", "Convert them and keep a fallback."));
@@ -395,6 +482,79 @@
 
   const LANG_RE = /^([a-z]{2,3})(-[a-zA-Z]{4})?(-([a-zA-Z]{2}|\d{3}))?$/;
 
+  /** Each JSON-LD block with its nodes, types, and any required properties missing. */
+  function markSchema(s) {
+    return (s.structuredData.jsonLd || []).map((b, i) => {
+      if (!b.ok) return { index: i, ok: false, error: b.error, preview: b.preview || "", nodes: [], severity: "fail" };
+      const nodes = [].concat(b.data["@graph"] || b.data).filter((n) => n && typeof n === "object").map((n) => {
+        const types = [].concat(n["@type"] || []).map(String);
+        const type = types.find((t) => REQUIRED[t]);
+        const missing = type ? REQUIRED[type].filter((k) => n[k] === undefined || n[k] === null || n[k] === "") : [];
+        return { types, id: n["@id"] || null, missing, node: n };
+      });
+      return { index: i, ok: true, nodes, severity: nodes.some((n) => n.missing.length) ? "warn" : "pass" };
+    });
+  }
+
+  /** Each hreflang tag, marked for an invalid code and for being this page. */
+  function markHreflang(s) {
+    const here = s.url.split("#")[0].replace(/\/$/, "");
+    return (s.hreflang || []).map((t) => {
+      const code = (t.hreflang || "").trim();
+      const valid = code.toLowerCase() === "x-default" || LANG_RE.test(code);
+      const self = (t.href || "").split("#")[0].replace(/\/$/, "") === here;
+      return { tag: t, valid, self, severity: valid ? null : "warn" };
+    });
+  }
+
+  /**
+   * What a link status means. 404, 410, 5xx and dead hosts are broken. 401, 403,
+   * 429 and LinkedIn's 999 are usually a site turning away automated requests,
+   * which a real visitor would not hit, so they are flagged but not called broken.
+   */
+  function linkStatusVerdict(r) {
+    if (!r) return null;
+    if (r.error || !r.status) return { severity: "fail", label: r.error === "timed out" ? "timeout" : "failed" };
+    if ([401, 403, 429, 999].includes(r.status)) return { severity: "warn", label: String(r.status) };
+    if (r.status >= 400) return { severity: "fail", label: String(r.status) };
+    if (r.redirected) return { severity: "warn", label: `redirect ${r.status}` };
+    return { severity: "pass", label: String(r.status) };
+  }
+
+  const BOT_WALL = [401, 403, 429, 999];
+
+  /** Findings from a finished link status check, so broken links reach Issues and the report. */
+  function linkStatusFindings(results) {
+    const out = [];
+    const all = Object.values(results || {});
+    if (!all.length) return out;
+    const tagged = all.map((r) => ({ r, v: linkStatusVerdict(r) }));
+    const named = (xs) => list(xs.map(({ r, v }) => `${r.url} (${v.label})`), 3);
+    const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
+
+    const broken = tagged.filter((x) => x.v.severity === "fail");
+    const blocked = tagged.filter((x) => x.v.severity === "warn" && BOT_WALL.includes(x.r.status));
+    const moved = tagged.filter((x) => x.v.severity === "warn" && !BOT_WALL.includes(x.r.status));
+    if (broken.length) {
+      out.push(F("fail", "links", "link.broken", `${plural(broken.length, "link is", "links are")} broken`,
+        `${named(broken)}. Visitors hit a dead end and crawlers waste the visit.`,
+        "Point each one at a live page or take it out. The internal ones are entirely yours to fix."));
+    }
+    if (moved.length) {
+      out.push(F("warn", "links", "link.redirect", `${plural(moved.length, "link goes", "links go")} through a redirect`,
+        `${named(moved)}.`, "Link straight to the final URL so nobody takes the extra hop."));
+    }
+    if (blocked.length) {
+      out.push(F("warn", "links", "link.blocked", `${plural(blocked.length, "link", "links")} refused the automated check`,
+        `${named(blocked)}. A 403 or 429 is usually a site blocking scripts, not a dead page.`,
+        "Open one in a normal tab. If it loads, the link is fine."));
+    }
+    if (!broken.length && !moved.length && !blocked.length) {
+      out.push(F("pass", "links", "link.status-ok", `All ${all.length} checked links answer directly`, null, null));
+    }
+    return out;
+  }
+
   function international(s) {
     const out = [];
     const tags = s.hreflang || [];
@@ -433,7 +593,10 @@
     return { findings, score: { fail: count("fail"), warn: count("warn"), note: count("note"), pass: count("pass") } };
   }
 
-  const api = { audit, indexability, meta, content, links, images, schema, international, REQUIRED };
+  const api = {
+    audit, indexability, meta, content, links, images, schema, international, REQUIRED,
+    markHeadings, markLinks, markImages, markSchema, markHreflang, linkStatusVerdict, linkStatusFindings, isNofollow,
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.SEOChecks = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
