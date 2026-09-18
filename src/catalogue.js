@@ -55,7 +55,7 @@
    "key": "ua",
    "name": "Universal Analytics",
    "category": "analytics",
-   "dead": "Stopped collecting data 1 Jul 2023 \u2014 this tag is dead and should be removed",
+   "dead": "Stopped collecting data 1 Jul 2023, this tag is dead and should be removed",
    "patterns": [
     "\\bUA-\\d{4,10}-\\d{1,3}\\b",
     "google-analytics\\.com/analytics\\.js",

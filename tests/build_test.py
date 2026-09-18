@@ -24,7 +24,12 @@ check("scripting permission", "scripting" in m["permissions"], True)
 check("header rewriting permission for the crawler probes",
       "declarativeNetRequestWithHostAccess" in m["permissions"], True)
 check("no permission we do not use", sorted(m["permissions"]),
-      ["declarativeNetRequestWithHostAccess", "scripting", "sidePanel", "storage", "tabs"])
+      ["activeTab", "declarativeNetRequestWithHostAccess", "scripting", "sidePanel", "storage", "tabs"])
+# Host access is asked for when it is needed, never at install, so the install
+# warning stays off and the Web Store reviewer sees a narrow grant.
+check("no host permission granted at install", "host_permissions" in m, False)
+check("host access is optional", m["optional_host_permissions"], ["<all_urls>"])
+check("the panel asks for access rather than assuming it", "chrome.permissions" in (APP / "panel.js").read_text(), True)
 
 html = (APP / "panel.html").read_text()
 srcs = re.findall(r'<script src="([^"]+)"', html) + re.findall(r'<link rel="stylesheet" href="([^"]+)"', html)
@@ -46,6 +51,9 @@ for p in shipped:
     check(f"{p.name} has no home path", "/home/" in text, False)
     check(f"{p.name} has no localhost reference", "localhost" in text or "127.0.0.1" in text, False)
     check(f"{p.name} has no em dash", "—" in text, False)
+    # The catalogue is generated through json.dumps, where an em dash arrives escaped.
+    check(f"{p.name} has no escaped em or en dash", "\\u2014" in text or "\\u2013" in text, False)
+    check(f"{p.name} has no en dash", "–" in text, False)
 
 # Icons: every size the manifest promises must exist and actually be that size.
 import struct

@@ -2,4 +2,4 @@
 // every read happens in panel.js, which has the same API access an extension page does.
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
-  .catch((err) => console.error("[seo-xray] setPanelBehavior", err));
+  .catch((err) => console.error("[seo-side-panel] setPanelBehavior", err));

@@ -19,6 +19,28 @@ const remember = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* fine */ } },
 };
 
+/**
+ * Host access is optional, so installing grants nothing and the install warning
+ * stays quiet. activeTab covers the tab the panel was opened on. Anything wider
+ * is asked for at the moment it is needed, per site or for every site.
+ *
+ * request() must be reached from a click with no await in front of it, or Chrome
+ * refuses it as gestureless. Every caller here is wired that way on purpose.
+ */
+const access = {
+  pattern(url) { try { return new URL(url).origin + "/*"; } catch { return null; } },
+  async has(origins) {
+    if (!chrome.permissions) return true;
+    try { return await chrome.permissions.contains({ origins: origins.filter(Boolean) }); } catch { return false; }
+  },
+  async request(origins) {
+    if (!chrome.permissions) return true;
+    try { return await chrome.permissions.request({ origins: origins.filter(Boolean) }); } catch { return false; }
+  },
+};
+
+const hostOf = (url) => { try { return new URL(url).host; } catch { return "this site"; } };
+
 const VIEWS = [
   { id: "summary", label: "Summary" },
   { id: "issues", label: "Issues" },
@@ -36,6 +58,7 @@ const VIEW_IDS = VIEWS.map((v) => v.id);
 const state = {
   tabId: null,
   snapshot: null,
+  access: null,
   view: VIEW_IDS.includes(remember.get("view")) ? remember.get("view") : "summary",
   drawnView: null,
   show: { fail: true, warn: true, note: true, pass: false },
@@ -615,7 +638,16 @@ async function checkLinkStatuses(urls) {
   const st = state.status;
   if (st.running || !state.snapshot) return;
   const forUrl = state.snapshot.url;
-  const list = urls.slice(0, 300);
+  let list = urls.slice(0, 300);
+  // A link to another domain can only be checked with access to that domain.
+  // Asked for only when there is such a link, and refusing it still checks the rest.
+  const sameSite = (u) => SEOFetch.originOf(u) === SEOFetch.originOf(forUrl);
+  if (list.some((u) => !sameSite(u)) && !(await access.request(["<all_urls>"]))) {
+    const before = list.length;
+    list = list.filter(sameSite);
+    notice(`Without access to other sites, ${list.length} of ${before} links were checked. The ones pointing elsewhere were left alone.`);
+    if (!list.length) return;
+  }
   Object.assign(st, { running: true, ranFor: null, results: {}, total: list.length, done: 0 });
   render();
   await SEOFetch.linkStatuses(list, {
@@ -883,6 +915,8 @@ function viewAi() {
   nodes.push(el("div", { class: "runbar" }, [
     el("label", {}, [probe, el("span", { text: "also request the page as GPTBot, ClaudeBot and PerplexityBot" })]),
   ]));
+  nodes.push(el("p", { class: "footnote", text:
+    "That sends two or three more requests carrying a crawler's user agent string. Use it on sites you own or have been asked to audit." }));
 
   if (!state.result.ai) {
     nodes.push(el("div", { class: "verdict" }, [
@@ -919,6 +953,39 @@ function viewData() {
   ];
 }
 
+// ---------- host access ----------
+/**
+ * The only card that asks for anything. It appears after a read has already
+ * failed for want of access, never before, so a user who never leaves the tab
+ * they started on is never asked at all.
+ */
+function accessCard(info) {
+  const nodes = el("div", { class: "verdict" }, [
+    el("div", { class: "big", text: "SEO Side Panel has no access to this page yet" }),
+    el("div", { class: "sub", text:
+      "It installs with access to nothing, so a page is only read once you allow it. "
+      + "Access covers reading the page, and fetching robots.txt, llms.txt and the sitemap from the same site when you press Run site checks." }),
+  ]);
+  const row = el("div", { class: "runbar" });
+  const site = el("button", { class: "btn", type: "button", id: "grant-site", text: `Allow on ${info.host}` });
+  site.addEventListener("click", () => grant([info.pattern]));
+  const all = el("button", { class: "btn ghost", type: "button", id: "grant-all", text: "Allow on all sites" });
+  all.addEventListener("click", () => grant(["<all_urls>"]));
+  row.appendChild(site);
+  row.appendChild(all);
+  nodes.appendChild(row);
+  nodes.appendChild(el("p", { class: "empty", text:
+    "All sites is what keeps the panel working as you move between tabs, and what lets Check status follow links to other domains. "
+    + "Either grant can be taken back from chrome://extensions." }));
+  return nodes;
+}
+
+async function grant(origins) {
+  const ok = await access.request(origins);
+  if (ok) { state.access = null; read(); return; }
+  notice("Chrome did not grant that access, so this page stays unread.");
+}
+
 // ---------- render ----------
 function renderTabs() {
   const nav = $("tabs");
@@ -950,7 +1017,11 @@ function render() {
   renderTabs();
   const keep = state.drawnView === state.view ? out.scrollTop : 0;
   out.textContent = "";
-  if (!state.snapshot) { state.timing.render = Math.round(performance.now() - t0); return; }
+  if (!state.snapshot) {
+    if (state.access) out.appendChild(accessCard(state.access));
+    state.timing.render = Math.round(performance.now() - t0);
+    return;
+  }
   const nodes = (DRAW[state.view] || viewSummary)();
   const frag = document.createDocumentFragment();
   for (const n of nodes) if (n) frag.appendChild(n);
@@ -989,18 +1060,34 @@ async function read() {
     const url = tab.url || "";
     if (!/^https?:/i.test(url)) {
       state.snapshot = null;
+      state.access = null;
       render();
-      notice("SEO Xray reads http and https pages. This tab is " + (url.split(":")[0] || "empty") + ".");
+      notice("SEO Side Panel reads http and https pages. This tab is " + (url.split(":")[0] || "empty") + ".");
       return;
     }
 
     const t0 = performance.now();
-    const [res] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["src/extract.js", "src/extract-inject.js"],
-    });
-    const snap = res && res.result;
+    let snap = null;
+    try {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["src/extract.js", "src/extract-inject.js"],
+      });
+      snap = res && res.result;
+    } catch (err) {
+      // No access to this host is the ordinary case, not a fault. Ask for it
+      // rather than reporting a failure the user cannot do anything with.
+      if (!(await access.has([access.pattern(url)]))) {
+        state.snapshot = null;
+        state.access = { pattern: access.pattern(url), host: hostOf(url) };
+        notice("");
+        render();
+        return;
+      }
+      throw err;
+    }
     if (!snap) throw new Error("the page returned nothing");
+    state.access = null;
     state.timing.read = Math.round(performance.now() - t0);
 
     // Anything fetched belongs to the URL it was fetched for.
@@ -1034,11 +1121,17 @@ const PROBE_AGENTS = [
 
 async function runSiteChecks() {
   if (!state.snapshot || state.running) return;
+  const url = state.snapshot.url;
+  // First await in the click, so the gesture still counts. Already granted is a
+  // silent true, so this only ever prompts a user running on activeTab alone.
+  if (!(await access.request([access.pattern(url)]))) {
+    notice(`Site checks read robots.txt and the sitemap from ${hostOf(url)}, which needs access to that site. Nothing was requested.`);
+    return;
+  }
   state.running = true;
   state.view = "ai";
   render();
   const t0 = performance.now();
-  const url = state.snapshot.url;
   const extras = [];
 
   try {
@@ -1115,7 +1208,7 @@ async function runSiteChecks() {
 function report() {
   const s = state.snapshot;
   if (!s) return "";
-  const lines = [`# SEO Xray: ${s.title.text || s.url}`, "", s.url, `Checked ${new Date().toLocaleString()}`, ""];
+  const lines = [`# SEO Side Panel: ${s.title.text || s.url}`, "", s.url, `Checked ${new Date().toLocaleString()}`, ""];
   const fs = allFindings();
   const c = counts(fs);
   lines.push(`${c.fail} to fix, ${c.warn} to look at, ${c.note} notes, ${c.pass} passed`, "");
@@ -1134,6 +1227,12 @@ function report() {
 }
 
 // ---------- wiring ----------
+// Access granted or taken back from chrome://extensions, rather than from the
+// card, still has to reach the panel.
+if (chrome.permissions && chrome.permissions.onAdded) {
+  chrome.permissions.onAdded.addListener(() => read());
+  chrome.permissions.onRemoved.addListener(() => read());
+}
 chrome.tabs.onActivated.addListener(read);
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (tabId === state.tabId && info.status === "complete") read();

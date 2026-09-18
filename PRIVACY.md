@@ -1,8 +1,8 @@
-# Privacy Policy, SEO Xray
+# Privacy Policy, SEO Side Panel
 
 **Last updated: 17 September 2026**
 
-SEO Xray does not collect, store, transmit or sell any personal data. There is
+SEO Side Panel does not collect, store, transmit or sell any personal data. There is
 no account, no API key, no analytics and no server belonging to this project.
 
 ## What happens when you open the panel
@@ -48,9 +48,13 @@ it stays on your machine.
 
 ## Permissions
 
-`<all_urls>` host access is what lets the panel read whichever tab you are on,
-fetch that site's robots.txt, and check the links on it when you ask. It is not used to watch your browsing. The
-extension has no background network activity and no remote code.
+The extension is installed with access to no website. `activeTab` lets it read
+the tab you opened the panel on. Anything beyond that is optional host access you
+grant yourself, either for one site or for every site, from a card in the panel,
+and it can be withdrawn at `chrome://extensions`. Access is what lets the panel
+read the tab you are on, fetch that site's robots.txt, and check the links on it
+when you ask. It is not used to watch your browsing. The extension has no
+background network activity and no remote code.
 
 ## Your data
 

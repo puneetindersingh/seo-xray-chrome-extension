@@ -20,6 +20,11 @@ STUB = r"""
 (() => {
   const snap = __SNAP__;
   const noop = { addListener() {} };
+  // Host access is optional in the manifest, so the stub models a real grant
+  // state: what is held, what gets asked for, and whether Chrome says yes.
+  const perm = Object.assign({ granted: ["<all_urls>"], asked: [], deny: false, denyRead: false }, __PERM__);
+  globalThis.__perm = perm;
+  const held = (o) => perm.granted.includes("<all_urls>") || perm.granted.includes(o);
   globalThis.chrome = {
     tabs: {
       query: async () => [{ id: 1, title: "Cheap Widgets Melbourne | Widget Co",
@@ -27,7 +32,23 @@ STUB = r"""
       onActivated: noop, onUpdated: noop,
     },
     windows: { onFocusChanged: noop, WINDOW_ID_NONE: -1 },
-    scripting: { executeScript: async () => [{ result: snap }] },
+    permissions: {
+      contains: async ({ origins }) => origins.every(held),
+      request: async ({ origins }) => {
+        perm.asked.push(origins.join(","));
+        if (perm.deny) return false;
+        perm.granted.push(...origins);
+        perm.denyRead = false;
+        return true;
+      },
+      onAdded: noop, onRemoved: noop,
+    },
+    scripting: {
+      executeScript: async () => {
+        if (perm.denyRead) throw new Error("Cannot access contents of the page.");
+        return [{ result: snap }];
+      },
+    },
     declarativeNetRequest: { updateSessionRules: async () => {} },
   };
 
@@ -98,7 +119,8 @@ def main():
         panel = browser.new_page(viewport={"width": 400, "height": 900})
         panel.on("pageerror", lambda e: errors.append(str(e)))
         panel.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
-        panel.add_init_script(STUB.strip().replace("__SNAP__", json.dumps(snap)))
+        stub = lambda perm: STUB.strip().replace("__SNAP__", json.dumps(snap)).replace("__PERM__", json.dumps(perm))
+        panel.add_init_script(stub({}))
         panel.goto((APP / "panel.html").as_uri(), wait_until="load")
         panel.wait_for_selector(".pcard")
 
@@ -354,10 +376,56 @@ def main():
 
         # ---- report ----
         md = panel.evaluate("() => report()")
-        check("report names the page", md.startswith("# SEO Xray: Cheap Widgets"), True)
+        check("report names the page", md.startswith("# SEO Side Panel: Cheap Widgets"), True)
         check("report has a to-fix section", "## To fix" in md, True)
         check("report carries fixes", "Fix:" in md, True)
         check("report has no em dash", "\u2014" in md, False)
+
+        # ---- host access, asked for rather than granted at install ----
+        check("site checks asked for access to the site it reads",
+              any(a == "https://example.com/*" for a in panel.evaluate("() => __perm.asked")), True)
+
+        # A panel that holds nothing and cannot read: the card should ask, not fail.
+        cold = browser.new_page(viewport={"width": 400, "height": 900})
+        cold.on("pageerror", lambda e: errors.append(str(e)))
+        cold.add_init_script(stub({"granted": [], "denyRead": True}))
+        cold.goto((APP / "panel.html").as_uri(), wait_until="load")
+        cold.wait_for_selector("#grant-site")
+        check("no read failure shown to a user who simply has not granted access",
+              cold.is_visible("#notice"), False)
+        check("the card names the site", cold.inner_text("#grant-site"), "Allow on example.com")
+        check("all sites is offered too", cold.inner_text("#grant-all"), "Allow on all sites")
+        check("nothing was asked for before the card was shown", cold.evaluate("() => __perm.asked"), [])
+        cold.click("#grant-site")
+        cold.wait_for_selector(".pcard")
+        check("granting one site reads the page", cold.inner_text("#page-title"), "Cheap Widgets Melbourne | Widget Co")
+        check("only that site was asked for", cold.evaluate("() => __perm.asked"), ["https://example.com/*"])
+
+        # Refused: the card stays, and the panel says so rather than looking broken.
+        refused = browser.new_page(viewport={"width": 400, "height": 900})
+        refused.add_init_script(stub({"granted": [], "denyRead": True, "deny": True}))
+        refused.goto((APP / "panel.html").as_uri(), wait_until="load")
+        refused.wait_for_selector("#grant-all")
+        refused.click("#grant-all")
+        refused.wait_for_selector("#notice:visible")
+        check("a refusal is explained", "did not grant" in refused.inner_text("#notice"), True)
+        check("the card is still there to try again", refused.is_visible("#grant-site"), True)
+
+        # Link status: cross-domain links need every site, and a refusal checks the rest.
+        links = browser.new_page(viewport={"width": 400, "height": 900})
+        links.add_init_script(stub({"granted": ["https://example.com/*"], "deny": True}))
+        links.goto((APP / "panel.html").as_uri(), wait_until="load")
+        links.wait_for_selector(".pcard")
+        links.click(".tab:has(> span:text-is('Links'))")
+        links.click("#check-status")
+        links.wait_for_selector("#notice:visible")
+        check("all sites is what an external link check asks for",
+              links.evaluate("() => __perm.asked"), ["<all_urls>"])
+        check("a refusal still checks the links it can", "were checked" in links.inner_text("#notice"), True)
+        checked = links.evaluate("() => __requests.map(r => r[0])")
+        check("no request went to a site that was not granted",
+              [u for u in checked if not u.startswith("https://example.com")], [])
+        check("the links on the granted site were still checked", len(checked) > 0, True)
 
         browser.close()
     httpd.shutdown()

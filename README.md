@@ -1,7 +1,7 @@
-# SEO Xray, a free on-page SEO Chrome extension
+# SEO Side Panel, a free on-page SEO Chrome extension
 
-SEO Xray is a Chrome side panel that audits the page you are looking at, using
-the page's own code. No account, no API key, no server, no AI. Open a page, the
+SEO Side Panel stays open beside every page you visit and audits each one,
+using the page's own code. No account, no API key, no server, no AI. Open a page, the
 panel reads it, and you get a list of what is wrong with a fix written next to
 each finding.
 
@@ -73,7 +73,7 @@ grade.
 
 ## Why another SEO extension
 
-| | SEO Xray | Typical SEO toolbar |
+| | SEO Side Panel | Typical SEO toolbar |
 | --- | --- | --- |
 | Account or login | none | usually required |
 | Sends the URL you visit to a server | never | usually |
@@ -108,13 +108,15 @@ your machine. See [PRIVACY.md](PRIVACY.md).
 | `scripting` | runs the reader inside the tab to take a snapshot |
 | `tabs` | knows which tab you are on and when you navigate |
 | `storage` | remembers which tab of the panel you had open |
+| `activeTab` | reads the tab you opened the panel on, with no standing access to anything |
 | `declarativeNetRequestWithHostAccess` | sets a crawler user agent on the optional probe request |
-| `<all_urls>` | you can audit any page, robots.txt can be fetched from any host, and links to any host can be checked |
+| `<all_urls>`, **optional** | only if you allow it: reading other tabs as you move between them, fetching robots.txt, and checking links that point to other domains |
 
-`<all_urls>` is a wide grant and worth understanding before you install anything
-that asks for it. Here it is what lets the panel read whichever tab you happen to
-be on. The code that uses it is in `src/extract.js` and `src/fetchers.js`, both
-short enough to read in a sitting.
+Installing grants access to no site at all, so Chrome shows no "read and change
+your data on all websites" warning. The first page the panel cannot read puts up
+a card with two buttons: allow this one site, or allow every site. Either can be
+taken back from `chrome://extensions` whenever you like. The code behind it is in
+`src/extract.js` and `src/fetchers.js`, both short enough to read in a sitting.
 
 ## Questions
 

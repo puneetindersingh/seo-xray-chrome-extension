@@ -70,7 +70,7 @@ def main():
 
         stub = (ROOT / "panel_test.py").read_text().split('STUB = r"""')[1].split('"""')[0]
         panel = browser.new_page(viewport={"width": 400, "height": 900})
-        panel.add_init_script(stub.strip().replace("__SNAP__", json.dumps(snap)))
+        panel.add_init_script(stub.strip().replace("__SNAP__", json.dumps(snap)).replace("__PERM__", "{}"))
         panel.goto((APP / "panel.html").as_uri(), wait_until="load")
         panel.wait_for_selector("#out > *")
         timing = panel.evaluate("() => state.timing")

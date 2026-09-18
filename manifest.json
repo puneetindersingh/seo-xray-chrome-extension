@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "SEO Xray",
-  "version": "0.1.0",
+  "name": "SEO Side Panel",
+  "version": "1.0.0",
   "description": "Free on-page SEO audit in a Chrome side panel. Check titles, meta, schema, robots.txt, indexing and AI crawler readiness.",
   "icons": {
     "16": "icons/icon16.png",
@@ -15,9 +15,10 @@
     "scripting",
     "storage",
     "tabs",
+    "activeTab",
     "declarativeNetRequestWithHostAccess"
   ],
-  "host_permissions": [
+  "optional_host_permissions": [
     "<all_urls>"
   ],
   "background": {
@@ -27,7 +28,7 @@
     "default_path": "panel.html"
   },
   "action": {
-    "default_title": "Open SEO Xray",
+    "default_title": "Open SEO Side Panel",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
